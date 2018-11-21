@@ -1,9 +1,9 @@
 #include "LJ_include.hpp"
-//#include <fenv.h>
+#include <fenv.h>
 
 int main(int argc, char *argv[]) {
   initMPIEnv(argc, argv);
-//  feenableexcept(FE_ALL_EXCEPT & ~FE_INEXACT);
+  feenableexcept(FE_ALL_EXCEPT & ~FE_INEXACT);
 
   // integration steps, cutoff, skin and thermostat flag
   espressopp::longint steps = 5000;
@@ -64,21 +64,18 @@ int main(int argc, char *argv[]) {
   system->bc = bc;
   system->setSkin(skin);
 
-  espressopp::Int3D nodeGrid(2, 2, 1);
-  espressopp::Int3D cellGrid(6, 6, 12);
+  espressopp::Int3D nodeGrid(1, 1, 1);
+  espressopp::Int3D cellGrid(13, 13, 13);
 
   boost::shared_ptr<espressopp::storage::Storage> storage (new espressopp::storage::DomainDecompositionAdress(system, nodeGrid, cellGrid));
   system->storage = storage;
 
   boost::shared_ptr<espressopp::FixedTupleListAdress> ftpl(new espressopp::FixedTupleListAdress(system->storage));
-  boost::shared_ptr<espressopp::FixedPairListAdress> 
-    fpl(new espressopp::FixedPairListAdress(system->storage, ftpl));
   
   // prepare AT particles  
   for(espressopp::longint pidCG=0;pidCG<num_particlesCG;++pidCG) {
     espressopp::Real3D cmp(0.0);
     espressopp::Real3D cmv(0.0);
-    std::vector<espressopp::Particle*> tupleAT;
     
       for(espressopp::longint j=0;j<4;++j) {
         espressopp::longint pidAT = pidCG*4+j;
@@ -86,9 +83,13 @@ int main(int argc, char *argv[]) {
         espressopp::Real3D vel(vx[pidAT], vy[pidAT], vz[pidAT]);
         espressopp::Real3D force(0.0);
         for (espressopp::longint i=0;i<3;++i) {
-          cmp[i] += pos[i] / 4.0;
-          cmv[i] += vel[i] / 4.0;
+          cmp[i] += pos[i];
+          cmv[i] += vel[i];
         }
+      }
+      for (espressopp::longint i=0;i<3;++i) {
+        cmp[i] /= 4.0;
+        cmv[i] /= 4.0;
       }
       espressopp::Particle* particleCG = system->storage->addParticle(pidCG+num_particles,cmp);
       if(particleCG != 0) {
@@ -96,35 +97,34 @@ int main(int argc, char *argv[]) {
         particleCG->setMass(4.0);
         particleCG->setF(espressopp::Real3D(0.0));
         particleCG->setType(0);
-      }
     
-    ftpl->add(pidCG+num_particles);
-    
-    for(espressopp::longint pidAT=0;pidAT<4;++pidAT) {
-      espressopp::longint pid = pidCG*4+pidAT;
-      espressopp::Real3D pos(x[pidAT], y[pidAT], z[pidAT]);
-      espressopp::Real3D vel(vx[pidAT], vy[pidAT], vz[pidAT]);
-      espressopp::Real3D force(fx[pidAT], fy[pidAT], fz[pidAT]);
-      size_t type = 1;
-      espressopp::real mass = 1.0;
-      espressopp::Particle* particleAT = system->storage->addAdrATParticle(pid, pos, cmp);
-      if(particleAT != 0) {
-        tupleAT.push_back(particleAT);
-        particleAT->setV(vel);
-        particleAT->setF(force);
-        particleAT->setType(type);
-        particleAT->setMass(mass);
+        ftpl->add(pidCG+num_particles);
+        
+        for(espressopp::longint pidAT=0;pidAT<4;++pidAT) {
+          espressopp::longint pid = pidCG*4+pidAT;
+          espressopp::Real3D pos(x[pid], y[pid], z[pid]);
+          espressopp::Real3D vel(vx[pid], vy[pid], vz[pid]);
+          espressopp::Real3D force(fx[pid], fy[pid], fz[pid]);
+          espressopp::Particle* particleAT = system->storage->addAdrATParticle(pid, pos, cmp);
+          if(particleAT != 0) {
+            particleAT->setV(vel);
+            particleAT->setF(force);
+            particleAT->setType(1);
+            particleAT->setMass(1.0);
+            ftpl->add(pid);
+          }
+          
+        }
+        ftpl->addTs(); // add tuples per CG particle
       }
-      
-      ftpl->add(pid);
-    }
-    ftpl->addTs(); // add tuples per CG particle
   }
 
   system->storage->setFixedTuplesAdress(ftpl);
   
   
   // add bonds  
+  boost::shared_ptr<espressopp::FixedPairListAdress> 
+    fpl(new espressopp::FixedPairListAdress(system->storage, ftpl));
   for(auto it=bondpairs.begin();it!=bondpairs.end();++it) {
     fpl->add(it->first,it->second);
   } 
@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
 
   bool rebuildVL = true;
   boost::shared_ptr<espressopp::VerletListAdress> 
-    verletList(new espressopp::VerletListAdress(system, rc+skin, rc+skin,rebuildVL, ex_size, hy_size));
+    verletList(new espressopp::VerletListAdress(system, rc+skin, rc+skin, rebuildVL, ex_size, hy_size));
   verletList->setAdrCenter(18.42225, 18.42225, 18.42225);
 
   // non-bonded potentials
@@ -146,11 +146,11 @@ int main(int argc, char *argv[]) {
   espressopp::real epsilon = 1.0;
   espressopp::real sigma = 1.0;
   boost::shared_ptr<espressopp::interaction::LennardJonesCapped>
-    potWCA (new espressopp::interaction::LennardJonesCapped(epsilon, epsilon, rca, 0.27));
-  potWCA->setShift(1.0);
+    potWCA (new espressopp::interaction::LennardJonesCapped(epsilon, sigma, rca, 0.27));
+  potWCA->setShift(rca);
  
   // CG 
-  int itype = 2;
+  int itype = 2; // interpolation type
   boost::shared_ptr<espressopp::interaction::Tabulated>
     potMorse (new espressopp::interaction::Tabulated(itype, tabMorse.c_str(), rc));
   
@@ -170,7 +170,7 @@ int main(int argc, char *argv[]) {
 
   boost::shared_ptr<espressopp::interaction::LennardJones> 
     potLJ (new espressopp::interaction::LennardJones(epsilon, sigma, rca));
-  potLJ->setShift(1.0);
+  potLJ->setShift(rca);
 
   boost::shared_ptr<espressopp::interaction::FixedPairListInteractionTemplate<espressopp::interaction::FENE>> 
     interFENE (new espressopp::interaction::FixedPairListInteractionTemplate<espressopp::interaction::FENE>(system, fpl, potFENE));
@@ -238,7 +238,7 @@ int main(int argc, char *argv[]) {
   espressopp::real T = temperature->compute_real();
   espressopp::real P = pressure->compute();
   espressopp::Tensor Pij = pressureTensor->computeRaw();
-  espressopp::real Ek = T * 0.5 * (3 * num_particles);
+  espressopp::real Ek = temperature->getEkin();
   espressopp::real Ep = interNB->computeEnergy();
   espressopp::real Eb = interFENE->computeEnergy();
   if(system->comm->rank() == 0) {
@@ -258,7 +258,8 @@ int main(int argc, char *argv[]) {
   time(&timer);
   espressopp::real nsteps = steps / intervals;
   for (espressopp::longint s=1;s<intervals+1;++s) {
-    integrator->run(nsteps);
+    integrator->run(1);
+    system->storage->decompose();
     xyzDumper.dump();
     espressopp::longint step = nsteps * s;
     T = temperature->compute_real();
@@ -279,7 +280,6 @@ int main(int argc, char *argv[]) {
               << "\n";
     }
     system->comm->barrier();
-    system->storage->decompose();
   }
   double seconds = difftime(timer,time(NULL));
 
